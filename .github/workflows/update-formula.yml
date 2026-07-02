@@ -1,0 +1,102 @@
+name: Update formula
+
+# Zero-secret tap updates: instead of the app repo pushing here with a PAT,
+# this workflow PULLS the public release manifest that cli-release.yml
+# publishes to captainkillswitch.github.io/downloads/cli/ and regenerates
+# Formula/cks.rb from it. Pushing to our own repo only needs the built-in
+# GITHUB_TOKEN (permissions: contents: write below) — no HOMEBREW_TAP_TOKEN.
+#
+# Runs on a schedule as a safety net; after cutting a CLI release you can also
+# trigger it immediately:  gh workflow run update-formula.yml -R captainkillswitch/homebrew-tap
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *' # every 6h — picks up releases automatically
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-formula
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Regenerate Formula/cks.rb from the published manifest
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="https://captainkillswitch.github.io/downloads/cli/manifest.json"
+
+          # Nothing published yet (first release hasn't run) — succeed quietly.
+          if ! curl -fsSL "$MANIFEST_URL" -o /tmp/manifest.json; then
+            echo "ℹ️ No CLI manifest at $MANIFEST_URL yet — nothing to do."
+            exit 0
+          fi
+
+          VERSION=$(jq -er .version /tmp/manifest.json)
+          SHA_MAC=$(jq -er '.sha256["macos-universal"]' /tmp/manifest.json)
+          SHA_LINUX=$(jq -er '.sha256["linux-x64"]' /tmp/manifest.json)
+
+          # Guard: refuse to write a formula with empty/garbage digests.
+          for v in "$VERSION" "$SHA_MAC" "$SHA_LINUX"; do
+            if [ -z "$v" ] || [ "$v" = "null" ]; then
+              echo "❌ Manifest is missing version or sha256 fields." >&2
+              exit 1
+            fi
+          done
+          if ! echo "$SHA_MAC$SHA_LINUX" | grep -qE '^[0-9a-f]{128}$'; then
+            echo "❌ sha256 fields are not two 64-char hex digests." >&2
+            exit 1
+          fi
+
+          mkdir -p Formula
+          # The formula installs the prebuilt binaries (macOS universal, Linux
+          # x64 musl) that the manifest's digests were computed from — the URLs
+          # and sha256 always move together in one publish.
+          cat > Formula/cks.rb <<EOF
+          class Cks < Formula
+            desc "Force-quit every running GUI application (Captain Kill Switch)"
+            homepage "https://captainkillswitch.com"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              url "https://captainkillswitch.github.io/downloads/cli/cks-macos"
+              sha256 "${SHA_MAC}"
+
+              def install
+                bin.install "cks-macos" => "cks"
+              end
+            end
+
+            on_linux do
+              url "https://captainkillswitch.github.io/downloads/cli/cks-linux"
+              sha256 "${SHA_LINUX}"
+
+              def install
+                bin.install "cks-linux" => "cks"
+              end
+            end
+
+            test do
+              assert_match "cks", shell_output("#{bin}/cks --help")
+            end
+          end
+          EOF
+
+          if git diff --quiet -- Formula/cks.rb && [ -n "$(git ls-files Formula/cks.rb)" ]; then
+            echo "ℹ️ Formula already at ${VERSION} — nothing to commit."
+            exit 0
+          fi
+
+          git add Formula/cks.rb
+          git -c user.name="CKS Release Bot" \
+              -c user.email="release-bot@captainkillswitch.invalid" \
+              commit -q -m "cks ${VERSION}"
+          git push origin HEAD:main
+          echo "✅ Formula updated to cks ${VERSION}"
