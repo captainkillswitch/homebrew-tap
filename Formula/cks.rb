@@ -15,7 +15,7 @@ class Cks < Formula
 
   on_linux do
     url "https://captainkillswitch.github.io/downloads/cli/cks-linux"
-    sha256 "80f6b59c8b19e5746fb2968197d72e03e0163aff48deb85e9347b1be7bd09c43"
+    sha256 "5b975474c827010fde35aa3f4b4cc4104615863c85bb67ec9b09ea3b94a7ab5a"
 
     def install
       bin.install "cks-linux" => "cks"
