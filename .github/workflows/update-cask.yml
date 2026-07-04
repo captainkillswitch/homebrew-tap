@@ -103,10 +103,13 @@ jobs:
             exit 0
           fi
 
+          # Identity must be set on the CONFIG (not just the commit): the
+          # rebase below runs its own commits and fails with "empty ident name"
+          # otherwise — which is exactly why the cask stuck at 0.2.84.
+          git config user.name "CKS Release Bot"
+          git config user.email "release-bot@captainkillswitch.invalid"
           git add Casks/captain-kill-switch.rb
-          git -c user.name="CKS Release Bot" \
-              -c user.email="release-bot@captainkillswitch.invalid" \
-              commit -q -m "captain-kill-switch cask ${VERSION}"
+          git commit -q -m "captain-kill-switch cask ${VERSION}"
           # update-formula.yml pushes to the same branch on its own schedule —
           # rebase once so an interleaved formula commit can't fail the push.
           git pull --rebase -q origin main
