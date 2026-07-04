@@ -1,0 +1,114 @@
+name: Update cask
+
+# Zero-secret cask updates, same architecture as update-formula.yml: PULL the
+# public GUI release manifest (latest.json) that cross-platform-release.yml
+# publishes to captainkillswitch.github.io/downloads/, download the DMG it
+# points at, and regenerate Casks/captain-kill-switch.rb with the fresh
+# sha256. Pushing to our own repo only needs the built-in GITHUB_TOKEN.
+#
+# Runs on a schedule as a safety net; after cutting a GUI release you can also
+# trigger it immediately:  gh workflow run update-cask.yml -R captainkillswitch/homebrew-tap
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '47 */6 * * *' # every 6h, offset from update-formula
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-cask
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Regenerate Casks/captain-kill-switch.rb from the published release
+        run: |
+          set -euo pipefail
+          MANIFEST_URL="https://captainkillswitch.github.io/downloads/latest.json"
+          DMG_URL="https://captainkillswitch.github.io/downloads/latest-macos.dmg"
+
+          # Nothing published yet — succeed quietly (parity with the formula job).
+          if ! curl -fsSL "$MANIFEST_URL" -o /tmp/latest.json; then
+            echo "ℹ️ No GUI manifest at $MANIFEST_URL yet — nothing to do."
+            exit 0
+          fi
+
+          VERSION=$(jq -er .version /tmp/latest.json)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "❌ latest.json has no version field." >&2
+            exit 1
+          fi
+
+          curl -fsSL "$DMG_URL" -o /tmp/latest-macos.dmg
+          SHA=$(sha256sum /tmp/latest-macos.dmg | cut -d' ' -f1)
+          if ! echo "$SHA" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "❌ Computed sha256 is not a 64-char hex digest." >&2
+            exit 1
+          fi
+
+          # Race guard: latest.json and the DMG move together in one force-push
+          # of the downloads repo. If a publish landed between our two fetches,
+          # the version will have changed — bail and let the next run pick up
+          # the settled state instead of pinning a mismatched (version, sha).
+          VERSION2=$(curl -fsSL "$MANIFEST_URL" | jq -er .version)
+          if [ "$VERSION" != "$VERSION2" ]; then
+            echo "⚠️ A publish landed mid-run ($VERSION -> $VERSION2) — retry on next schedule." >&2
+            exit 1
+          fi
+
+          mkdir -p Casks
+          cat > Casks/captain-kill-switch.rb <<EOF
+          cask "captain-kill-switch" do
+            version "${VERSION}"
+            sha256 "${SHA}"
+
+            url "https://captainkillswitch.github.io/downloads/latest-macos.dmg"
+            name "Captain Kill Switch"
+            desc "System-tray app that force-quits every running application"
+            homepage "https://captainkillswitch.com"
+
+            livecheck do
+              url "https://captainkillswitch.github.io/downloads/latest.json"
+              strategy :json do |json|
+                json["version"]
+              end
+            end
+
+            # The app updates itself via the built-in Tauri updater; the pinned sha256
+            # only has to match the version current at install time.
+            auto_updates true
+
+            app "Captain Kill Switch.app"
+
+            uninstall quit: "com.captainkillswitch.app"
+
+            zap trash: [
+              "~/Library/Application Support/com.captainkillswitch.app",
+              "~/Library/Caches/com.captainkillswitch.app",
+              "~/Library/LaunchAgents/com.captainkillswitch.app.plist",
+              "~/Library/Logs/com.captainkillswitch.app",
+              "~/Library/Preferences/com.captainkillswitch.app.plist",
+            ]
+          end
+          EOF
+
+          if git diff --quiet -- Casks/captain-kill-switch.rb && [ -n "$(git ls-files Casks/captain-kill-switch.rb)" ]; then
+            echo "ℹ️ Cask already at ${VERSION} — nothing to commit."
+            exit 0
+          fi
+
+          git add Casks/captain-kill-switch.rb
+          git -c user.name="CKS Release Bot" \
+              -c user.email="release-bot@captainkillswitch.invalid" \
+              commit -q -m "captain-kill-switch cask ${VERSION}"
+          # update-formula.yml pushes to the same branch on its own schedule —
+          # rebase once so an interleaved formula commit can't fail the push.
+          git pull --rebase -q origin main
+          git push origin HEAD:main
+          echo "✅ Cask updated to captain-kill-switch ${VERSION}"
