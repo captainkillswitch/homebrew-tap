@@ -1,6 +1,6 @@
 cask "captain-kill-switch" do
-  version "0.4.5"
-  sha256 "84dd53155fc7432aa952de41e9a4cf35f5a2b455c9189c2e740b9f4e21615ecb"
+  version "0.4.6"
+  sha256 "f7f8fdeea8a4535b8a79658c218a48207e4f0e665df08932d309db5876056939"
 
   url "https://captainkillswitch.github.io/downloads/latest-macos.dmg"
   name "Captain Kill Switch"
