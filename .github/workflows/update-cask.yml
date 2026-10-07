@@ -2,9 +2,16 @@ name: Update cask
 
 # Zero-secret cask updates, same architecture as update-formula.yml: PULL the
 # public GUI release manifest (latest.json) that cross-platform-release.yml
-# publishes to captainkillswitch.github.io/downloads/, download the DMG it
-# points at, and regenerate Casks/captain-kill-switch.rb with the fresh
-# sha256. Pushing to our own repo only needs the built-in GITHUB_TOKEN.
+# publishes to captainkillswitch.github.io/downloads/, download that version's
+# DMG from the IMMUTABLE versioned mirror (the downloads repo's vX.Y.Z GitHub
+# Release), and regenerate Casks/captain-kill-switch.rb with its sha256.
+# Pushing to our own repo only needs the built-in GITHUB_TOKEN.
+#
+# Why the versioned URL, not latest-macos.dmg: that file is replaced the
+# moment a release publishes, while this cask still pins the previous sha256
+# until the next run - so every `brew install --cask` failed checksum
+# verification in between (0.4.12: 08:40-11:59 UTC). A versioned URL never
+# changes under a pinned sha; the cask just lags, and the app self-updates.
 #
 # Runs on a schedule as a safety net; after cutting a GUI release you can also
 # trigger it immediately:  gh workflow run update-cask.yml -R captainkillswitch/homebrew-tap
@@ -31,7 +38,6 @@ jobs:
         run: |
           set -euo pipefail
           MANIFEST_URL="https://captainkillswitch.github.io/downloads/latest.json"
-          DMG_URL="https://captainkillswitch.github.io/downloads/latest-macos.dmg"
 
           # Nothing published yet — succeed quietly (parity with the formula job).
           if ! curl -fsSL "$MANIFEST_URL" -o /tmp/latest.json; then
@@ -40,25 +46,29 @@ jobs:
           fi
 
           VERSION=$(jq -er .version /tmp/latest.json)
-          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-            echo "❌ latest.json has no version field." >&2
+          if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "❌ latest.json version '$VERSION' is not X.Y.Z." >&2
             exit 1
           fi
 
-          curl -fsSL "$DMG_URL" -o /tmp/latest-macos.dmg
+          MIRROR="https://github.com/captainkillswitch/downloads/releases/download/v${VERSION}"
+          DMG="captain-kill-switch-${VERSION}-macos.dmg"
+          # The release pipeline uploads the versioned assets a minute or two
+          # AFTER latest.json goes live. Until then keep the current cask (its
+          # URL is immutable, so it still installs) and let the next run move it.
+          if ! curl -fsSL "$MIRROR/$DMG" -o /tmp/latest-macos.dmg; then
+            echo "ℹ️ $DMG is not on the versioned mirror yet — keeping the current cask."
+            exit 0
+          fi
           SHA=$(sha256sum /tmp/latest-macos.dmg | cut -d' ' -f1)
           if ! echo "$SHA" | grep -qE '^[0-9a-f]{64}$'; then
             echo "❌ Computed sha256 is not a 64-char hex digest." >&2
             exit 1
           fi
-
-          # Race guard: latest.json and the DMG move together in one force-push
-          # of the downloads repo. If a publish landed between our two fetches,
-          # the version will have changed — bail and let the next run pick up
-          # the settled state instead of pinning a mismatched (version, sha).
-          VERSION2=$(curl -fsSL "$MANIFEST_URL" | jq -er .version)
-          if [ "$VERSION" != "$VERSION2" ]; then
-            echo "⚠️ A publish landed mid-run ($VERSION -> $VERSION2) — retry on next schedule." >&2
+          # Cross-check against the release's published checksums.
+          WANT=$(curl -fsSL "$MIRROR/SHA256SUMS.txt" | awk -v n="$DMG" '$2==n {print $1}')
+          if [ "$SHA" != "$WANT" ]; then
+            echo "❌ $DMG hashes to $SHA but SHA256SUMS.txt says '${WANT}'." >&2
             exit 1
           fi
 
@@ -68,7 +78,8 @@ jobs:
             version "${VERSION}"
             sha256 "${SHA}"
 
-            url "https://captainkillswitch.github.io/downloads/latest-macos.dmg"
+            url "https://github.com/captainkillswitch/downloads/releases/download/v#{version}/captain-kill-switch-#{version}-macos.dmg",
+                verified: "github.com/captainkillswitch/downloads/"
             name "Captain Kill Switch"
             desc "System-tray app that force-quits every running application"
             homepage "https://captainkillswitch.com"

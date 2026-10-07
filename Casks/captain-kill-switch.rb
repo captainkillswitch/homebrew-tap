@@ -2,7 +2,8 @@ cask "captain-kill-switch" do
   version "0.4.12"
   sha256 "6eeb1c1e921561924a13aec6d3e00e85d26880408683695c2ba8ef742b3be9a2"
 
-  url "https://captainkillswitch.github.io/downloads/latest-macos.dmg"
+  url "https://github.com/captainkillswitch/downloads/releases/download/v#{version}/captain-kill-switch-#{version}-macos.dmg",
+      verified: "github.com/captainkillswitch/downloads/"
   name "Captain Kill Switch"
   desc "System-tray app that force-quits every running application"
   homepage "https://captainkillswitch.com"
