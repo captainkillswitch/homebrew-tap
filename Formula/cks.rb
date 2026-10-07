@@ -4,22 +4,16 @@ class Cks < Formula
   version "0.1.4"
   license "MIT"
 
-  on_macos do
+  if OS.mac?
     url "https://captainkillswitch.github.io/downloads/cli/cks-macos"
     sha256 "5789a92e3ebd4c659152e0959cd37068fcafae92388d6bf2f2934c416ccc84b2"
-
-    def install
-      bin.install "cks-macos" => "cks"
-    end
-  end
-
-  on_linux do
+  else
     url "https://captainkillswitch.github.io/downloads/cli/cks-linux"
     sha256 "26751385d708556f59b222e7c3d9fde0eadae2047b1e4fa8d2d8815c7924f673"
+  end
 
-    def install
-      bin.install "cks-linux" => "cks"
-    end
+  def install
+    bin.install Dir["cks-*"].first => "cks"
   end
 
   test do
