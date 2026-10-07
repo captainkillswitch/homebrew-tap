@@ -35,7 +35,9 @@ Both packages are regenerated automatically from the public release files at
 don't PR version bumps here.
 
 - `Formula/cks.rb` — by [`.github/workflows/update-formula.yml`](.github/workflows/update-formula.yml)
-  from the CLI manifest (`cli/manifest.json`)
+  (hourly) from the CLI manifest (`cli/manifest.json`), pointing at the
+  immutable per-version assets on the downloads repo's `cli-vX.Y.Z` release so
+  a new CLI release never invalidates the pinned sha256
 - `Casks/captain-kill-switch.rb` — by [`.github/workflows/update-cask.yml`](.github/workflows/update-cask.yml)
   from the app manifest (`latest.json`) + the served DMG (the app itself
   auto-updates after install, so the pinned digest only matters at install time)

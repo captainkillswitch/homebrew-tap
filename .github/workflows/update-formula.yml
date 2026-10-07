@@ -6,13 +6,23 @@ name: Update formula
 # Formula/cks.rb from it. Pushing to our own repo only needs the built-in
 # GITHUB_TOKEN (permissions: contents: write below) — no HOMEBREW_TAP_TOKEN.
 #
-# Runs on a schedule as a safety net; after cutting a CLI release you can also
-# trigger it immediately:  gh workflow run update-formula.yml -R captainkillswitch/homebrew-tap
+# Formula URLs are the IMMUTABLE per-version assets on the downloads repo's
+# cli-vX.Y.Z GitHub Release (manifest.json's "release" + "assets", published
+# by cli-release.yml BEFORE the manifest goes live) — same fix as the cask's
+# #1. The Pages files (cli/cks-macos, …) are replaced by every CLI publish
+# while this formula still pins the previous sha256, so pointing at them
+# broke `brew install cks` until the next run. A versioned URL never changes
+# under its pinned sha: the formula just lags. Manifests published before the
+# mirror existed (<= 0.1.4) have no "release" field and keep the old URLs.
+#
+# Hourly (free: public repo) because the app repo has no token that can
+# dispatch this; after cutting a CLI release you can also trigger it
+# immediately:  gh workflow run update-formula.yml -R captainkillswitch/homebrew-tap
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '17 */6 * * *' # every 6h — picks up releases automatically
+    - cron: '17 * * * *' # hourly — picks up releases automatically
 
 permissions:
   contents: write
@@ -54,33 +64,65 @@ jobs:
             exit 1
           fi
 
+          RELEASE=$(jq -r '.release // empty' /tmp/manifest.json)
+          if [ -n "$RELEASE" ]; then
+            case "$RELEASE" in
+              "https://github.com/captainkillswitch/downloads/releases/download/cli-v${VERSION}") ;;
+              *) echo "❌ manifest release '$RELEASE' is not the cli-v${VERSION} mirror." >&2; exit 1 ;;
+            esac
+            ASSET_MAC=$(jq -er '.assets["macos-universal"]' /tmp/manifest.json)
+            ASSET_LINUX=$(jq -er '.assets["linux-x64"]' /tmp/manifest.json)
+            for a in "$ASSET_MAC" "$ASSET_LINUX"; do
+              if ! echo "$a" | grep -qE "^cks-${VERSION//./\\.}-[a-z0-9_-]+$"; then
+                echo "❌ manifest asset name '$a' is not cks-${VERSION}-<platform>." >&2
+                exit 1
+              fi
+            done
+            # Pin only bytes we've actually fetched from the immutable URL and
+            # that match the manifest. If they aren't downloadable yet, keep the
+            # current formula (still installable) and let the next run move it.
+            for pair in "$ASSET_MAC $SHA_MAC" "$ASSET_LINUX $SHA_LINUX"; do
+              asset=${pair% *}; want=${pair#* }
+              if ! curl -fsSL "$RELEASE/$asset" -o "/tmp/$asset"; then
+                echo "ℹ️ $RELEASE/$asset not downloadable yet — keeping the current formula."
+                exit 0
+              fi
+              got=$(sha256sum "/tmp/$asset" | cut -d' ' -f1)
+              if [ "$got" != "$want" ]; then
+                echo "❌ $asset hashes to $got but manifest.json says $want." >&2
+                exit 1
+              fi
+            done
+            URL_MAC="$RELEASE/$ASSET_MAC"
+            URL_LINUX="$RELEASE/$ASSET_LINUX"
+          else
+            # Legacy manifest (no mirror): the mutable Pages URLs, as before.
+            URL_MAC="https://captainkillswitch.github.io/downloads/cli/cks-macos"
+            URL_LINUX="https://captainkillswitch.github.io/downloads/cli/cks-linux"
+          fi
+
           mkdir -p Formula
           # The formula installs the prebuilt binaries (macOS universal, Linux
-          # x64 musl) that the manifest's digests were computed from — the URLs
-          # and sha256 always move together in one publish.
+          # x64 musl) that the manifest's digests were computed from. OS.mac?
+          # rather than on_macos/on_linux blocks: brew style rejects url/sha256
+          # inside those, and there is exactly one artifact per OS. Homebrew
+          # stages a bare-file download under its URL basename (cks-*).
           cat > Formula/cks.rb <<EOF
           class Cks < Formula
             desc "Force-quit every running GUI application (Captain Kill Switch)"
             homepage "https://captainkillswitch.com"
-            version "${VERSION}"
             license "MIT"
 
-            on_macos do
-              url "https://captainkillswitch.github.io/downloads/cli/cks-macos"
+            if OS.mac?
+              url "${URL_MAC}"
               sha256 "${SHA_MAC}"
-
-              def install
-                bin.install "cks-macos" => "cks"
-              end
+            else
+              url "${URL_LINUX}"
+              sha256 "${SHA_LINUX}"
             end
 
-            on_linux do
-              url "https://captainkillswitch.github.io/downloads/cli/cks-linux"
-              sha256 "${SHA_LINUX}"
-
-              def install
-                bin.install "cks-linux" => "cks"
-              end
+            def install
+              bin.install Dir["cks-*"].first => "cks"
             end
 
             test do
@@ -88,15 +130,27 @@ jobs:
             end
           end
           EOF
+          # Versioned URLs carry the version, so they need no `version` stanza
+          # (brew audit: "redundant with version scanned from URL"); the legacy
+          # unversioned Pages URLs do.
+          if [ -z "$RELEASE" ]; then
+            awk -v v="$VERSION" '{ print } /^  homepage / { print "  version \"" v "\"" }' \
+              Formula/cks.rb > Formula/cks.rb.tmp
+            mv Formula/cks.rb.tmp Formula/cks.rb
+          fi
 
           if git diff --quiet -- Formula/cks.rb && [ -n "$(git ls-files Formula/cks.rb)" ]; then
             echo "ℹ️ Formula already at ${VERSION} — nothing to commit."
             exit 0
           fi
 
+          # Identity on the CONFIG so the rebase below can commit too.
+          git config user.name "CKS Release Bot"
+          git config user.email "release-bot@captainkillswitch.invalid"
           git add Formula/cks.rb
-          git -c user.name="CKS Release Bot" \
-              -c user.email="release-bot@captainkillswitch.invalid" \
-              commit -q -m "cks ${VERSION}"
+          git commit -q -m "cks ${VERSION}"
+          # update-cask.yml pushes to the same branch on its own schedule —
+          # rebase once so an interleaved cask commit can't fail the push.
+          git pull --rebase -q origin main
           git push origin HEAD:main
           echo "✅ Formula updated to cks ${VERSION}"
